@@ -28,7 +28,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # App files
 COPY server.py working_pipeline.py ./
 
-EXPOSE 7860
 EXPOSE 7863
 
 # Docker healthcheck (calls FastAPI /health)
