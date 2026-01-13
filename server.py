@@ -3,9 +3,6 @@ import multiprocessing
 from contextlib import asynccontextmanager
 import asyncio
 import xml.etree.ElementTree as ET
-import pickle
-from pathlib import Path
-from threading import Thread
 from typing import Optional
 
 import aiohttp
@@ -13,7 +10,7 @@ import psycopg2
 import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -40,78 +37,6 @@ class CallProcessDetailedResponse(BaseModel):
     message: str
     call_sid: str
     data: Optional[dict] = None
-
-
-async def get_call_analysis(call_sid: str) -> dict:
-    """Fetch full call analysis from the database (excluding _completed columns)."""
-    def _get_analysis_in_thread():
-        try:
-            conn = psycopg2.connect(
-                host=os.getenv("DB_HOST"),
-                port=os.getenv("DB_PORT", "5432"),
-                database=os.getenv("DB_NAME"),
-                user=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD")
-            )
-            
-            cursor = conn.cursor()
-            
-            # Fetch call analysis data (excluding columns ending with _completed)
-            query = """
-            SELECT 
-                sid, "Completed", transcript, transcript_status,
-                call_status, summary,
-                information_requested,
-                threat, priority,
-                human_intervention,
-                satisfaction,
-                frustration,
-                nuisance,
-                repeated_complaint,
-                next_best_action,
-                open_questions,
-                pii_details
-            FROM "crm-ai-db" WHERE sid = %s;
-            """
-            
-            cursor.execute(query, (call_sid,))
-            result = cursor.fetchone()
-            
-            cursor.close()
-            conn.close()
-            
-            if result:
-                analysis = {
-                    "sid": result[0],
-                    "completed": result[1],
-                    "transcript": result[2],
-                    "transcript_status": result[3],
-                    "call_status": result[4],
-                    "summary": result[5],
-                    "information_requested": result[6],
-                    "threat": result[7],
-                    "priority": result[8],
-                    "human_intervention": result[9],
-                    "satisfaction": result[10],
-                    "frustration": result[11],
-                    "nuisance": result[12],
-                    "repeated_complaint": result[13],
-                    "next_best_action": result[14],
-                    "open_questions": result[15],
-                    "pii_details": result[16],
-                }
-                return {"status": "success", "data": analysis}
-            else:
-                return {"status": "not_found", "data": None}
-            
-        except psycopg2.Error as e:
-            print(f"❌ Database error: {e}")
-            return {"status": "error", "message": str(e)}
-        except Exception as e:
-            print(f"❌ Error fetching from database: {e}")
-            return {"status": "error", "message": str(e)}
-    
-    return await asyncio.to_thread(_get_analysis_in_thread)
 
 # ----------------- HELPERS ----------------- #
 
@@ -200,7 +125,7 @@ def get_call_data_from_db(conn, call_sid):
                 next_best_action, next_best_action_completed,
                 open_questions, open_questions_completed,
                 pii_details, pii_details_completed,
-                "Completed"
+                "Completed", recording_url, call_duration
             FROM "crm-ai-db" 
             WHERE sid=%s
         ''', (call_sid,))
@@ -239,7 +164,9 @@ def get_call_data_from_db(conn, call_sid):
                 "open_questions_completed": result[25],
                 "pii_details": json.loads(result[26]) if result[26] else {},
                 "pii_details_completed": result[27],
-                "completed": result[28]
+                "completed": result[28],
+                "recording_url": result[29],
+                "call_duration": result[30],
             }
             return call_data
         return None
@@ -319,39 +246,6 @@ async def check_call_status(sid: str) -> JSONResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/call_analysis")
-async def call_analysis(sid: str) -> JSONResponse:
-    """Fetch detailed call analysis by SID."""
-    if not sid:
-        raise HTTPException(
-            status_code=400,
-            detail="sid parameter is required",
-        )
-    
-    try:
-        result = await get_call_analysis(sid)
-        
-        if result["status"] == "not_found":
-            raise HTTPException(
-                status_code=404,
-                detail=f"Call with SID '{sid}' not found",
-            )
-        elif result["status"] == "error":
-            raise HTTPException(
-                status_code=500,
-                detail=f"Database error: {result['message']}",
-            )
-        
-        return JSONResponse(
-            status_code=200,
-            content=result["data"]
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # Background processing function (from api.py)
 def process_call_sync(call_sid):
     """
@@ -370,6 +264,8 @@ def process_call_sync(call_sid):
             return False, "Call not found on Exotel", None
 
         recording_url = call_data.get("RecordingUrl")
+        call_duration = call_data.get("Duration")
+
         if not recording_url:
             return False, "Recording not yet available", None
 
@@ -408,14 +304,18 @@ def process_call_sync(call_sid):
             conn,
             call_sid,
             transcript,
-            structured_analysis
+            structured_analysis,
+            recording_url,
+            call_duration
         )
 
         conn.commit()
 
         return True, "Call processed successfully", {
             "transcript": transcript,
-            "analysis": structured_analysis
+            "analysis": structured_analysis,
+            "recording_url": recording_url,
+            "call_duration": call_duration
         }
 
     except Exception as e:
