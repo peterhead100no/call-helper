@@ -61,19 +61,6 @@ def insert_call_record(conn, call_sid):
         conn.rollback()
         return False
 
-def get_incomplete_sids(conn=None):
-    try:
-        if not conn:
-            conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, database=DB_NAME, user=DB_USER, password=DB_PASSWORD)
-        cursor = conn.cursor()
-        cursor.execute("""SELECT sid FROM "crm-ai-db" WHERE "Completed" = FALSE and call_status='in-progress'""")
-        results = cursor.fetchall()
-        cursor.close()
-        return [row[0] for row in results]
-    except Exception as e:
-        print(f"DB error: {e}")
-        return []
-
 def get_call_info(call_sid):
     try:
         url = f"{BASE_URL}/Calls/{call_sid}"
@@ -412,7 +399,7 @@ def save_call_status_to_db(conn, call_sid, call_status):
         print(f"DB save error: {e}")
         return False
 
-def save_structured_analysis_to_db(conn, call_sid, transcript_text, structured_analysis):
+def save_structured_analysis_to_db(conn, call_sid, transcript_text, structured_analysis, recording_url, call_duration):
     try:
         cursor = conn.cursor()
         cursor.execute('''
@@ -430,7 +417,9 @@ def save_structured_analysis_to_db(conn, call_sid, transcript_text, structured_a
             open_questions=%s, open_questions_completed=%s,
             pii_details=%s, pii_details_completed=%s,
             "Completed"=TRUE,
-            call_status=%s
+            call_status=%s,
+            recording_url=%s,
+            call_duration=%s
             WHERE sid=%s
         ''', (
             transcript_text, "completed",
@@ -447,6 +436,8 @@ def save_structured_analysis_to_db(conn, call_sid, transcript_text, structured_a
             json.dumps(structured_analysis.get("open_questions",[])), True,
             json.dumps(structured_analysis.get("pii_details",{})), True,
             "completed",
+            recording_url,
+            call_duration,
             call_sid
         ))
         conn.commit()
