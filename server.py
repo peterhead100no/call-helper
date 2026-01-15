@@ -238,6 +238,8 @@ async def check_call_status(sid: str) -> JSONResponse:
             content={
                 "sid": sid,
                 "call_status": result["call_status"],
+                "call_duration": result["call_data"].get("Duration"),
+                "recording_url": result["call_data"].get("RecordingUrl"),
                 }
         )
     
